@@ -1,0 +1,15 @@
+venv/
+__pycache__/
+*.pyc
+.env
+.git/
+.gitignore
+*.db
+frames/
+*.log
+tmp/
+README.md
+test_gemini.py
+list_models.py
+download_heroes.py
+calibrate.py

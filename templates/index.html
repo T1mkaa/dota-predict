@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Dota Predict — угадай момент</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='28'>%E2%9A%A1</text></svg>">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <h1>⚡ Dota Predict</h1>
+  <div class="nick">
+    <label>Ник:</label>
+    <input id="nick" maxlength="24" placeholder="твой ник">
+  </div>
+</header>
+
+<main>
+  <section class="stream">
+    {% if twitch_channel %}
+    <iframe
+      src="https://player.twitch.tv/?channel={{ twitch_channel }}&parent=localhost&parent=127.0.0.1&muted=false"
+      allowfullscreen
+      height="480" width="100%"></iframe>
+    {% elif local_video_url %}
+    <video src="{{ local_video_url }}" autoplay controls muted loop playsinline
+           style="width:100%; border-radius:12px; background:#000; aspect-ratio:16/9;"></video>
+    {% else %}
+    <div class="no-stream">STREAM_URL не задан в .env</div>
+    {% endif %}
+
+    <div class="timeline" id="timeline"></div>
+
+    <div class="predict-box">
+      <div class="type-toggle">
+        <button class="type-btn active" data-type="kill">🗡️ Килл</button>
+        <button class="type-btn" data-type="roshan">🐉 Рошан</button>
+      </div>
+
+      <div class="delay-row">
+        <label>Событие произойдёт через: <b id="delayLabel">5</b> сек</label>
+        <input type="range" id="delay" min="1" max="30" value="5" step="0.5">
+      </div>
+
+      <button id="submit" class="submit-btn">📍 ПРЕДСКАЗАТЬ</button>
+    </div>
+
+    <div id="active" class="active-list"></div>
+    <div id="flash" class="flash"></div>
+  </section>
+
+  <aside class="side">
+    <h2>🏆 Лидерборд</h2>
+    <ol id="board"></ol>
+
+    <h2>📜 События и предсказания</h2>
+    <ul id="events"></ul>
+  </aside>
+</main>
+
+<script>
+const nickInput = document.getElementById('nick');
+nickInput.value = localStorage.getItem('nick') || '';
+nickInput.addEventListener('input', () => localStorage.setItem('nick', nickInput.value));
+
+const delayInput = document.getElementById('delay');
+const delayLabel = document.getElementById('delayLabel');
+delayInput.addEventListener('input', () => delayLabel.textContent = delayInput.value);
+
+let currentType = 'kill';
+document.querySelectorAll('.type-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.type-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    currentType = btn.dataset.type;
+  });
+});
+
+const flash = document.getElementById('flash');
+const board = document.getElementById('board');
+const eventsEl = document.getElementById('events');
+const timeline = document.getElementById('timeline');
+const activeBox = document.getElementById('active');
+const videoEl = document.querySelector('video');
+// In demo mode all prediction/event timestamps live in video-time so the
+// player, detector, and scoring all share one timeline.
+const nowTs = () => videoEl ? videoEl.currentTime : (Date.now() / 1000);
+
+function showFlash(text, cls = 'ok') {
+  flash.textContent = text;
+  flash.className = 'flash ' + cls;
+  flash.style.opacity = '1';
+  setTimeout(() => flash.style.opacity = '0', 3500);
+}
+
+const activePreds = new Map();
+const resolvedIds = new Set();
+
+function renderActive() {
+  const now = nowTs();
+  activeBox.innerHTML = '';
+  for (const [id, p] of activePreds) {
+    const remain = p.predicted_ts - now;
+    if (remain < -20) {
+      if (!resolvedIds.has(id) && p.nickname === nickInput.value.trim()) {
+        showFlash(`⏱ Мимо — событие ${p.event_type === 'kill' ? '«килл»' : '«рошан»'} не совпало с твоим прогнозом`, 'err');
+      }
+      activePreds.delete(id);
+      continue;
+    }
+    const row = document.createElement('div');
+    row.className = 'active-row ' + p.event_type + (resolvedIds.has(id) ? ' hit' : '');
+    const icon = p.event_type === 'kill' ? '🗡️' : '🐉';
+    const label = remain >= 0 ? `через <span class="cd">${remain.toFixed(1)}с</span>`
+                              : `<span class="cd past">${(-remain).toFixed(1)}с назад</span>`;
+    row.innerHTML = `${icon} <b>${p.nickname}</b> → ${label}`;
+    activeBox.appendChild(row);
+  }
+}
+setInterval(renderActive, 100);
+
+document.getElementById('submit').addEventListener('click', async () => {
+  const nick = nickInput.value.trim();
+  if (!nick) { showFlash('Введи ник', 'err'); return; }
+  const delay = parseFloat(delayInput.value);
+  const body = {nickname: nick, event_type: currentType, delay_seconds: delay};
+  if (videoEl) body.submit_video_time = videoEl.currentTime;
+  const r = await fetch('/api/predict', {
+    method: 'POST', headers: {'content-type': 'application/json'},
+    body: JSON.stringify(body)
+  });
+  if (r.ok) {
+    const data = await r.json();
+    showFlash(`Предсказание: ${currentType === 'kill' ? 'килл' : 'рошан'} через ${delay}с ⏱️`);
+  } else {
+    let msg = 'Ошибка';
+    try { msg = (await r.json()).error || msg; } catch (e) {}
+    showFlash(msg, 'err');
+  }
+});
+
+function renderBoard(list) {
+  board.innerHTML = list.map((u, i) =>
+    `<li><span class="rk">${i+1}</span><span class="nm">${u.nickname}</span><span class="sc">${u.score}</span></li>`
+  ).join('');
+}
+
+function logLine(html) {
+  const li = document.createElement('li');
+  li.innerHTML = html;
+  eventsEl.prepend(li);
+  while (eventsEl.children.length > 20) eventsEl.lastChild.remove();
+}
+
+function addMark(cls, label) {
+  const mark = document.createElement('div');
+  mark.className = 'mark ' + cls;
+  mark.title = label || '';
+  mark.style.right = '0%';
+  timeline.appendChild(mark);
+  requestAnimationFrame(() => mark.style.right = '100%');
+  setTimeout(() => mark.remove(), 20000);
+}
+
+function connect() {
+  const ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.onmessage = (e) => {
+    const msg = JSON.parse(e.data);
+    if (msg.type === 'leaderboard') {
+      renderBoard(msg.board);
+      if (msg.awarded && msg.awarded.length) {
+        const myNick = nickInput.value.trim();
+        const mine = msg.awarded.find(a => a.nickname === myNick);
+        const top = msg.awarded.sort((a,b) => b.points - a.points)[0];
+        if (mine) {
+          showFlash(`🎯 Ты попал! +${mine.points} очков (ошибка ${mine.delta}с)`, 'ok');
+        } else {
+          showFlash(`🎯 ${top.nickname}: +${top.points} очков (ошибка ${top.delta}с)`, 'ok');
+        }
+        msg.awarded.forEach(a => {
+          resolvedIds.add(a.prediction_id);
+          logLine(`✅ <b>${a.nickname}</b> +${a.points} <span class="src">Δ ${a.delta}с</span>`);
+        });
+      }
+    } else if (msg.type === 'event') {
+      addMark('ev ' + msg.event_type, msg.event_type);
+      logLine(`${msg.event_type === 'kill' ? '🗡️' : '🐉'} <b>${msg.event_type}</b> <span class="src">${msg.source}</span>`);
+    } else if (msg.type === 'prediction') {
+      activePreds.set(msg.prediction_id, msg);
+      addMark('pred ' + msg.event_type, msg.nickname);
+    }
+  };
+  ws.onclose = () => setTimeout(connect, 1500);
+}
+connect();
+fetch('/api/leaderboard').then(r => r.json()).then(renderBoard);
+
+// Sync local-demo video playback with detector's current offset
+if (videoEl) {
+  fetch('/api/status').then(r => r.json()).then(s => {
+    if (s.demo_mode && typeof s.video_time === 'number') {
+      const apply = () => {
+        try { videoEl.currentTime = Math.max(0, s.video_time + 0.5); } catch (e) {}
+        videoEl.play().catch(() => {});
+      };
+      if (videoEl.readyState >= 1) apply();
+      else videoEl.addEventListener('loadedmetadata', apply, { once: true });
+    }
+  }).catch(() => {});
+}
+</script>
+</body>
+</html>
