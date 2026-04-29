@@ -2,14 +2,14 @@
 <html lang="ru">
 <head>
 <meta charset="utf-8">
-<title>Dota Predict — угадай момент</title>
+<title>Dota Predict — угадай момент килла</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='28'>%E2%9A%A1</text></svg>">
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
 <header>
-  <h1>⚡ Dota Predict</h1>
+  <h1>⚡ Dota Predict <small>— угадай момент килла</small></h1>
   <div class="nick">
     <label>Ник:</label>
     <input id="nick" maxlength="24" placeholder="твой ник">
@@ -38,13 +38,8 @@
     </div>
 
     <div class="predict-box">
-      <div class="type-toggle">
-        <button class="type-btn active" data-type="kill">🗡️ Килл</button>
-        <button class="type-btn" data-type="roshan">🐉 Рошан</button>
-      </div>
-
       <div class="target-row">
-        <label>Целевое время игры (MM:SS):</label>
+        <label>🗡️ Целевое время килла (MM:SS):</label>
         <input id="target" type="text" placeholder="35:00" pattern="[0-9]{1,2}:[0-9]{2}">
       </div>
 
@@ -68,15 +63,6 @@
 const nickInput = document.getElementById('nick');
 nickInput.value = localStorage.getItem('nick') || '';
 nickInput.addEventListener('input', () => localStorage.setItem('nick', nickInput.value));
-
-let currentType = 'kill';
-document.querySelectorAll('.type-btn').forEach(btn => {
-  btn.addEventListener('click', () => {
-    document.querySelectorAll('.type-btn').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    currentType = btn.dataset.type;
-  });
-});
 
 const flash = document.getElementById('flash');
 const board = document.getElementById('board');
@@ -125,18 +111,17 @@ function renderActive() {
     const remain = p.target_game_time - now;
     if (remain < -20) {
       if (!resolvedIds.has(id) && p.nickname === nickInput.value.trim()) {
-        showFlash(`⏱ Мимо — ${p.event_type === 'kill' ? 'килл' : 'рошан'} на ${fmtMmss(p.target_game_time)} не совпал`, 'err');
+        showFlash(`⏱ Мимо — килл на ${fmtMmss(p.target_game_time)} не совпал`, 'err');
       }
       activePreds.delete(id);
       continue;
     }
     const row = document.createElement('div');
-    row.className = 'active-row ' + p.event_type + (resolvedIds.has(id) ? ' hit' : '');
-    const icon = p.event_type === 'kill' ? '🗡️' : '🐉';
+    row.className = 'active-row kill' + (resolvedIds.has(id) ? ' hit' : '');
     const label = remain >= 0
       ? `${fmtMmss(p.target_game_time)} (через <span class="cd">${remain}с</span>)`
       : `${fmtMmss(p.target_game_time)} (<span class="cd past">${-remain}с назад</span>)`;
-    row.innerHTML = `${icon} <b>${p.nickname}</b> → ${label}`;
+    row.innerHTML = `🗡️ <b>${p.nickname}</b> → ${label}`;
     activeBox.appendChild(row);
   }
 }
@@ -149,10 +134,10 @@ document.getElementById('submit').addEventListener('click', async () => {
   if (!target) { showFlash('Введи целевое время MM:SS', 'err'); return; }
   const r = await fetch('/api/predict', {
     method: 'POST', headers: {'content-type': 'application/json'},
-    body: JSON.stringify({nickname: nick, event_type: currentType, target})
+    body: JSON.stringify({nickname: nick, event_type: 'kill', target})
   });
   if (r.ok) {
-    showFlash(`Прогноз: ${currentType === 'kill' ? 'килл' : 'рошан'} на ${target} 🎯`);
+    showFlash(`Прогноз: килл на ${target} 🎯`);
     targetInput.value = '';
   } else {
     let msg = 'Ошибка';
@@ -205,12 +190,13 @@ function connect() {
         });
       }
     } else if (msg.type === 'event') {
-      addMark('ev ' + msg.event_type, msg.event_type);
-      logLine(`${msg.event_type === 'kill' ? '🗡️' : '🐉'} <b>${msg.event_type}</b> на <span class="cd">${fmtMmss(msg.ts)}</span> <span class="src">${msg.source}</span>`);
+      if (msg.event_type !== 'kill') return;
+      addMark('ev kill', 'kill');
+      logLine(`🗡️ <b>kill</b> на <span class="cd">${fmtMmss(msg.ts)}</span> <span class="src">${msg.source}</span>`);
     } else if (msg.type === 'prediction') {
       activePreds.set(msg.prediction_id, msg);
-      addMark('pred ' + msg.event_type, msg.nickname);
-      logLine(`📍 <b>${msg.nickname}</b> ставит ${msg.event_type === 'kill' ? '🗡️' : '🐉'} на <span class="cd">${fmtMmss(msg.target_game_time)}</span>`);
+      addMark('pred kill', msg.nickname);
+      logLine(`📍 <b>${msg.nickname}</b> ставит 🗡️ на <span class="cd">${fmtMmss(msg.target_game_time)}</span>`);
     }
   };
   ws.onclose = () => setTimeout(connect, 1500);

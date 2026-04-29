@@ -11,6 +11,7 @@ header {
   position: sticky; top: 0; z-index: 10;
 }
 header h1 { margin: 0; font-size: 22px; letter-spacing: 1px; }
+header h1 small { font-size: 14px; color: #8ea0bb; font-weight: 400; letter-spacing: 0.5px; margin-left: 6px; }
 .nick input {
   background: #0f151f; color: #e8edf3; border: 1px solid #2a3444;
   padding: 8px 12px; border-radius: 8px; font-size: 14px; outline: none;
@@ -37,20 +38,11 @@ main {
 }
 .mark.pred { background: #ffb02e; }
 .mark.ev.kill { background: #ff4d4d; width: 6px; box-shadow: 0 0 12px #ff4d4d; }
-.mark.ev.roshan { background: #9b59ff; width: 6px; box-shadow: 0 0 12px #9b59ff; }
 
 .predict-box {
   margin-top: 14px; padding: 18px; background: #141b28; border-radius: 12px;
   border: 1px solid #223044;
 }
-.type-toggle { display: flex; gap: 8px; margin-bottom: 16px; }
-.type-btn {
-  flex: 1; padding: 10px; font-size: 14px; font-weight: 600;
-  background: #1d2636; color: #8ea0bb; border: 1px solid #2a3444;
-  border-radius: 8px; cursor: pointer; transition: all 0.15s;
-}
-.type-btn.active { background: linear-gradient(135deg, #ff4d4d, #c93030); color: white; border-color: transparent; }
-.type-btn.active[data-type="roshan"] { background: linear-gradient(135deg, #9b59ff, #6638c0); }
 
 .game-clock {
   display: flex; align-items: baseline; justify-content: center; gap: 12px;
@@ -93,7 +85,6 @@ main {
   padding: 8px 12px; background: #161f2e; border-radius: 8px;
   border-left: 3px solid #ff4d4d; font-size: 14px;
 }
-.active-row.roshan { border-left-color: #9b59ff; }
 .active-row .cd { color: #ffb02e; font-weight: 700; font-variant-numeric: tabular-nums; }
 .active-row .cd.past { color: #ff4d4d; }
 .active-row.hit {

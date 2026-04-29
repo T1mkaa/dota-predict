@@ -1,14 +1,15 @@
 """Ensemble detector for Dota 2 stream events.
 
+v0.1 ships kill-only. Roshan detection is parked for v0.2 — see
+detectors/roshan.py — because reliable HUD-based detection requires a
+clean 1080p replay without studio overlays, which we couldn't source.
+
 Channels:
   - Video: top-score OCR (counts ticks on the Radiant/Dire kill counter —
-    ground truth on F1=95% with zero false positives) + Roshan (Aegis icon
-    and the "slain" banner).
-  - Audio: normalized cross-correlation with reference sounds (Roshan roar,
-    First Blood, Double/Triple Kill, Rampage, Aegis pickup).
-
-Per-kind cooldown prevents different channels from duplicating the same
-event (4s for kills, 60s for Roshan).
+    F1=95% on the demo VOD with zero false positives).
+  - Audio: normalized cross-correlation with reference kill sounds
+    (First Blood, Double/Triple Kill, Rampage). Live-only, not used in
+    demo mode.
 
 Source: a Twitch/YouTube URL (resolved via yt-dlp) or a path to a local
 video file — the latter is the demo mode that drives the UI without a live
@@ -29,7 +30,6 @@ import cv2
 import numpy as np
 
 from detectors.audio import AudioDetector, audio_pipeline
-from detectors.roshan import RoshanDetector
 from detectors.score_ocr import ScoreDetector
 from detectors.timer_ocr import calibrate_offset
 
@@ -44,10 +44,9 @@ if not log.handlers:
 
 ASSETS = Path(__file__).parent / "assets"
 DIGITS_DIR = ASSETS / "digits"
-TEMPLATES_DIR = ASSETS / "templates"
 SOUNDS_DIR = ASSETS / "sounds"
 
-COOLDOWN = {"kill": 1.5, "roshan": 60.0}
+COOLDOWN = {"kill": 1.5}
 
 
 def _fmt_mmss(secs: int | float) -> str:
@@ -180,9 +179,8 @@ class Ensemble:
 
     def __init__(self):
         self.score = ScoreDetector(DIGITS_DIR)
-        self.roshan = RoshanDetector(TEMPLATES_DIR)
         self.audio = AudioDetector(SOUNDS_DIR)
-        self._last_fire: dict[str, float] = {"kill": float("-inf"), "roshan": float("-inf")}
+        self._last_fire: dict[str, float] = {"kill": float("-inf")}
 
     def _try_fire(self, kind: str, now: float) -> bool:
         if now - self._last_fire[kind] >= COOLDOWN[kind]:
@@ -197,13 +195,11 @@ class Ensemble:
             if self._try_fire("kill", now):
                 fired.append(("kill", f"score({side})"))
 
-        rh = self.roshan.detect(frame_bgr, now)
-        if rh and self._try_fire("roshan", now):
-            fired.append(("roshan", f"roshan_{rh[0]}({rh[1]:.2f})"))
-
         return fired
 
     def on_audio_hit(self, kind: str, now: float, tag: str) -> bool:
+        if kind != "kill":
+            return False
         return self._try_fire(kind, now)
 
 
@@ -215,7 +211,7 @@ async def run_detector(
 ):
     """Main loop: resolve source, drive detectors, dispatch events."""
     ensemble = Ensemble()
-    log.info("ensemble ready (score_ocr+roshan+audio)")
+    log.info("ensemble ready (score_ocr+audio)")
 
     if _is_local_source(stream_url):
         path = _local_path(stream_url)

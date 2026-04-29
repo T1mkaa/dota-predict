@@ -138,8 +138,8 @@ async def predict(body: PredictBody):
     nick = body.nickname.strip()[:24]
     if not nick:
         return JSONResponse({"error": "укажи никнейм"}, status_code=400)
-    if body.event_type not in ("kill", "roshan"):
-        return JSONResponse({"error": "event_type должен быть kill или roshan"}, status_code=400)
+    if body.event_type != "kill":
+        return JSONResponse({"error": "в v0.1 поддерживаются только ставки на kill"}, status_code=400)
     target = _parse_target(body.target)
     if target is None:
         return JSONResponse({"error": "неверный формат target (нужно MM:SS или секунды)"}, status_code=400)
