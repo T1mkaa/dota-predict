@@ -31,6 +31,7 @@ import numpy as np
 from detectors.audio import AudioDetector, audio_pipeline
 from detectors.roshan import RoshanDetector
 from detectors.score_ocr import ScoreDetector
+from detectors.timer_ocr import calibrate_offset
 
 log = logging.getLogger("detector")
 log.setLevel(logging.INFO)
@@ -49,13 +50,29 @@ SOUNDS_DIR = ASSETS / "sounds"
 COOLDOWN = {"kill": 1.5, "roshan": 60.0}
 
 
+def _fmt_mmss(secs: int | float) -> str:
+    s = int(secs)
+    return f"{s // 60}:{s % 60:02d}"
+
+
 class DemoClock:
     """Tracks the current playback offset inside a looping local VOD so the
     UI's <video> element can seek to the same timeline the detector is
-    currently processing. In live mode it stays at None."""
+    currently processing. In live mode video_time stays at None.
+
+    game_time_offset: int seconds such that game_time = video_time + offset.
+    Calibrated once at demo start by reading the in-game HUD timer.
+    None means calibration failed or live mode.
+    """
     def __init__(self):
         self.video_time: float | None = None
         self.loop_started_wall: float | None = None
+        self.game_time_offset: int | None = None
+
+    def game_time(self) -> int | None:
+        if self.video_time is None or self.game_time_offset is None:
+            return None
+        return int(self.video_time) + self.game_time_offset
 
 demo_clock = DemoClock()
 
@@ -203,19 +220,34 @@ async def run_detector(
     if _is_local_source(stream_url):
         path = _local_path(stream_url)
         log.info("running in DEMO mode from local file: %s", path)
+        # One-shot calibration: lock the video_time → game_time offset by reading
+        # the HUD timer on a handful of frames near the start. Demo VOD is known
+        # to have no in-match pauses, so a constant offset suffices.
+        offset = calibrate_offset(path)
+        if offset is None:
+            log.warning("timer calibration failed; events will lack game_time")
+        demo_clock.game_time_offset = offset
+        prev_video_t: float | None = None
         try:
             async for jpeg in frame_generator_local(path, interval):
-                # In demo mode events are stamped with video-time (not wall-clock)
-                # so that client video.currentTime, detector, and predictions all
-                # live on the same timeline. This eliminates any drift between
-                # the player buffer and the detector loop.
-                now = demo_clock.video_time if demo_clock.video_time is not None else time.time()
+                video_t = demo_clock.video_time if demo_clock.video_time is not None else time.time()
+                # On VOD loop the video_time jumps backward — reset detector
+                # state so confirmed counters from the previous pass don't
+                # block fresh emits in the new pass.
+                if prev_video_t is not None and video_t + 1 < prev_video_t:
+                    log.info("VOD looped, resetting ensemble state")
+                    ensemble = Ensemble()
+                prev_video_t = video_t
+
+                game_t = demo_clock.game_time()
+                ts = float(game_t) if game_t is not None else float(video_t)
                 frame_bgr = cv2.imdecode(np.frombuffer(jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
                 if frame_bgr is None:
                     continue
-                for kind, tag in ensemble.on_video_frame(frame_bgr, now):
-                    log.info("EVENT %s source=%s video_time=%.1f", kind, tag, now)
-                    await on_event(kind, now, tag)
+                for kind, tag in ensemble.on_video_frame(frame_bgr, video_t):
+                    log.info("EVENT %s source=%s game_time=%s video_time=%.1f",
+                             kind, tag, _fmt_mmss(game_t) if game_t is not None else "n/a", video_t)
+                    await on_event(kind, ts, tag)
         except Exception as e:
             log.exception("demo loop crashed: %s", e)
         return

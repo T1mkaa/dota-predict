@@ -55,18 +55,39 @@ async def add_prediction(user_id: int, event_type: str, submit_ts: float, predic
         return cur.lastrowid
 
 
-async def has_active_prediction(user_id: int, now_ts: float, window: float = 20.0) -> bool:
-    """A prediction counts as active while it is unmatched AND its predicted_ts
-    has not fallen out of the scoring window. Used to enforce one-shot betting."""
+async def last_unmatched_target(user_id: int) -> float | None:
+    """Latest predicted_ts (game-time) for an unmatched bet by this user.
+    Used to enforce a min spacing between successive bets."""
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
-            """SELECT 1 FROM predictions
-               WHERE user_id=? AND matched=0
-               AND predicted_ts + ? >= ?
-               LIMIT 1""",
-            (user_id, window, now_ts),
+            """SELECT MAX(predicted_ts) FROM predictions
+               WHERE user_id=? AND matched=0""",
+            (user_id,),
         ) as cur:
-            return (await cur.fetchone()) is not None
+            row = await cur.fetchone()
+            return row[0] if row and row[0] is not None else None
+
+
+async def user_predictions(user_id: int, limit: int = 20):
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            """SELECT id, event_type, predicted_ts, matched, score_awarded, delta
+               FROM predictions WHERE user_id=?
+               ORDER BY id DESC LIMIT ?""",
+            (user_id, limit),
+        ) as cur:
+            rows = await cur.fetchall()
+            return [
+                {
+                    "id": r[0],
+                    "event_type": r[1],
+                    "target": r[2],
+                    "matched": r[3],
+                    "points": r[4],
+                    "delta": r[5],
+                }
+                for r in rows
+            ]
 
 
 async def add_event(event_type: str, ts: float, source: str = "ai") -> int:

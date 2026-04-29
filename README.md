@@ -1,6 +1,6 @@
 # Dota Predict
 
-Игра на угадывание событий в Dota 2 трансляции: зрители заранее предсказывают, **через сколько секунд** случится ближайший килл или смерть Рошана, а AI-детектор фиксирует реальный момент и раздаёт очки за точность.
+Спортивный прогноз по Dota 2: зрители смотрят трансляцию и заранее ставят, **в какой момент игрового времени** случится ближайший килл или смерть Рошана (`MM:SS` по HUD-таймеру). AI-детектор фиксирует реальное событие, кубическая формула очков отсекает «лудоманский» спам — попадание секунда-в-секунду даёт максимум, край окна почти ноль.
 
 ## Точность детектора
 
@@ -21,10 +21,21 @@
 - **Видео-канал (основной).**
   - **Счёт-OCR** (`detectors/score_ocr.py`): читает цифры Radiant/Dire в верхней HUD. Инкремент счёта = килл. Template matching по 33 шаблонам цифр, стабилизация 2 кадра, классификация через cosine similarity на бинарных масках. Это «истина» — счёт растёт только при реальном килле героя.
   - **Рошан** (`detectors/roshan.py`): иконка Aegis в инвентаре (работает) + шаблон надписи "Roshan has been slain" (опционально).
+  - **Игровой таймер** (`detectors/timer_ocr.py` → `calibrate_offset`): на старте demo-режима читает HUD-таймер на ~30 кадрах в начале VOD, медианой определяет offset `video_time → game_time`. Дальше все события и ставки живут в одном пространстве (`MM:SS` по таймеру Dota).
 - **Аудио-канал** (`detectors/audio.py`): нормализованная cross-correlation с эталонными звуками (First Blood, Double/Triple Kill, Rampage, Aegis pickup, рёв Рошана). Добавляет recall, когда видео перекрыто оверлеем стримера.
 - **In-game gate** (`detectors/gameplay_gate.py`): отсекает меню/хайлайты по дисперсии миникарты и отсутствию логотипа Dota.
 
-Все каналы слетаются в `Ensemble` (`detector.py`), где per-kind cooldown не даёт дублировать одно событие (`kill`: 4 с, `roshan`: 60 с).
+Все каналы слетаются в `Ensemble` (`detector.py`), где per-kind cooldown не даёт дублировать одно событие (`kill`: 1.5 с, `roshan`: 60 с).
+
+## Игровая модель
+
+- **Ставки в game-time.** Пользователь пишет ник + выбирает `kill`/`roshan` + вводит целевое время `MM:SS`.
+- **Дедлайн ставки:** не позднее чем за 10 сек до целевого момента.
+- **Анти-спам:** между двумя своими ставками — минимум 30 сек по `target`.
+- **Окно матчинга:** ±20 сек от события. Кубическая формула:
+  `points = base · max(0, 1 − Δ / window)³`
+  Базовая стоимость килла — 1000, Рошана — 3000. Δ=0 → max; Δ=10 → /8; Δ ≥ 20 → 0.
+  Спам-стратегия не работает — оракул, попадающий в секунду, кратно обгоняет ставящих наугад.
 
 ### Почему именно счёт-OCR
 
@@ -62,6 +73,11 @@ FRAME_INTERVAL=1.0
 
 Открой `http://127.0.0.1:8000`.
 
+## Известные ограничения
+
+- **Live-режим (Twitch URL) пока без ставок.** В demo-режиме offset `video_time → game_time` калибруется один раз на старте — это работает, потому что в эталонном VOD нет внутриматчевых пауз. Для live-стрима с возможной паузой нужен непрерывный OCR таймера; текущий single-frame OCR на нашем VOD даёт ~63% — недостаточно для полного state-машинного режима. План v0.2 — заменить cosine-classifier на маленький CNN.
+- **Demo VOD** (`tmp/vod_chunk.mp4`) склеен из конца одного матча и начала следующего. Калибровка использует только первый матч; после loop детектор сбрасывается.
+
 ## Замер точности на размеченном VOD
 
 ```bash
@@ -73,18 +89,20 @@ FRAME_INTERVAL=1.0
 ## Структура проекта
 
 ```
-app.py                  FastAPI + WebSocket server
-detector.py             Ensemble + live-loop + demo-loop
+app.py                  FastAPI + WebSocket server, scoring API
+detector.py             Ensemble + live-loop + demo-loop с calibrate_offset
 detectors/
   score_ocr.py          Основной kill-детектор (HUD score OCR)
   roshan.py             Рошан: aegis + slain banner
+  timer_ocr.py          OCR HUD-таймера + calibrate_offset (demo-mode)
   audio.py              Аудио-канал
   gameplay_gate.py      In-game фильтр
-db.py                   SQLite (users/events/predictions)
-templates/index.html    UI
+db.py                   SQLite (users/events/predictions, всё в game-time)
+templates/index.html    UI: live game-clock + MM:SS-инпут ставки
 static/style.css        UI стили
 assets/
-  digits/               Шаблоны цифр 0-9 (HUD OCR)
+  digits/               Шаблоны цифр 0-9 (счёт HUD)
+  digits_timer/         Шаблоны цифр для таймера (мельче чем у счёта)
   templates/            aegis.png и прочее
   sounds/               Эталонные звуки
 evaluate.py             Оффлайн метрики на размеченном VOD

@@ -32,18 +32,23 @@
 
     <div class="timeline" id="timeline"></div>
 
+    <div class="game-clock">
+      <span class="lbl">Игровое время:</span>
+      <span class="clock" id="gameClock">--:--</span>
+    </div>
+
     <div class="predict-box">
       <div class="type-toggle">
         <button class="type-btn active" data-type="kill">🗡️ Килл</button>
         <button class="type-btn" data-type="roshan">🐉 Рошан</button>
       </div>
 
-      <div class="delay-row">
-        <label>Событие произойдёт через: <b id="delayLabel">5</b> сек</label>
-        <input type="range" id="delay" min="1" max="30" value="5" step="0.5">
+      <div class="target-row">
+        <label>Целевое время игры (MM:SS):</label>
+        <input id="target" type="text" placeholder="35:00" pattern="[0-9]{1,2}:[0-9]{2}">
       </div>
 
-      <button id="submit" class="submit-btn">📍 ПРЕДСКАЗАТЬ</button>
+      <button id="submit" class="submit-btn">📍 ПОСТАВИТЬ ПРОГНОЗ</button>
     </div>
 
     <div id="active" class="active-list"></div>
@@ -64,10 +69,6 @@ const nickInput = document.getElementById('nick');
 nickInput.value = localStorage.getItem('nick') || '';
 nickInput.addEventListener('input', () => localStorage.setItem('nick', nickInput.value));
 
-const delayInput = document.getElementById('delay');
-const delayLabel = document.getElementById('delayLabel');
-delayInput.addEventListener('input', () => delayLabel.textContent = delayInput.value);
-
 let currentType = 'kill';
 document.querySelectorAll('.type-btn').forEach(btn => {
   btn.addEventListener('click', () => {
@@ -83,9 +84,28 @@ const eventsEl = document.getElementById('events');
 const timeline = document.getElementById('timeline');
 const activeBox = document.getElementById('active');
 const videoEl = document.querySelector('video');
-// In demo mode all prediction/event timestamps live in video-time so the
-// player, detector, and scoring all share one timeline.
-const nowTs = () => videoEl ? videoEl.currentTime : (Date.now() / 1000);
+const targetInput = document.getElementById('target');
+const gameClock = document.getElementById('gameClock');
+
+// Live game-time mirror: server polled every second.
+let currentGameTime = null;
+function fmtMmss(s) {
+  if (s == null) return '--:--';
+  s = Math.max(0, Math.floor(s));
+  return Math.floor(s/60) + ':' + String(s%60).padStart(2,'0');
+}
+async function pollStatus() {
+  try {
+    const r = await fetch('/api/status');
+    if (r.ok) {
+      const s = await r.json();
+      currentGameTime = s.game_time;
+      gameClock.textContent = fmtMmss(currentGameTime);
+    }
+  } catch (e) {}
+}
+pollStatus();
+setInterval(pollStatus, 1000);
 
 function showFlash(text, cls = 'ok') {
   flash.textContent = text;
@@ -98,13 +118,14 @@ const activePreds = new Map();
 const resolvedIds = new Set();
 
 function renderActive() {
-  const now = nowTs();
+  const now = currentGameTime;
   activeBox.innerHTML = '';
   for (const [id, p] of activePreds) {
-    const remain = p.predicted_ts - now;
+    if (now == null) continue;
+    const remain = p.target_game_time - now;
     if (remain < -20) {
       if (!resolvedIds.has(id) && p.nickname === nickInput.value.trim()) {
-        showFlash(`⏱ Мимо — событие ${p.event_type === 'kill' ? '«килл»' : '«рошан»'} не совпало с твоим прогнозом`, 'err');
+        showFlash(`⏱ Мимо — ${p.event_type === 'kill' ? 'килл' : 'рошан'} на ${fmtMmss(p.target_game_time)} не совпал`, 'err');
       }
       activePreds.delete(id);
       continue;
@@ -112,27 +133,27 @@ function renderActive() {
     const row = document.createElement('div');
     row.className = 'active-row ' + p.event_type + (resolvedIds.has(id) ? ' hit' : '');
     const icon = p.event_type === 'kill' ? '🗡️' : '🐉';
-    const label = remain >= 0 ? `через <span class="cd">${remain.toFixed(1)}с</span>`
-                              : `<span class="cd past">${(-remain).toFixed(1)}с назад</span>`;
+    const label = remain >= 0
+      ? `${fmtMmss(p.target_game_time)} (через <span class="cd">${remain}с</span>)`
+      : `${fmtMmss(p.target_game_time)} (<span class="cd past">${-remain}с назад</span>)`;
     row.innerHTML = `${icon} <b>${p.nickname}</b> → ${label}`;
     activeBox.appendChild(row);
   }
 }
-setInterval(renderActive, 100);
+setInterval(renderActive, 200);
 
 document.getElementById('submit').addEventListener('click', async () => {
   const nick = nickInput.value.trim();
   if (!nick) { showFlash('Введи ник', 'err'); return; }
-  const delay = parseFloat(delayInput.value);
-  const body = {nickname: nick, event_type: currentType, delay_seconds: delay};
-  if (videoEl) body.submit_video_time = videoEl.currentTime;
+  const target = targetInput.value.trim();
+  if (!target) { showFlash('Введи целевое время MM:SS', 'err'); return; }
   const r = await fetch('/api/predict', {
     method: 'POST', headers: {'content-type': 'application/json'},
-    body: JSON.stringify(body)
+    body: JSON.stringify({nickname: nick, event_type: currentType, target})
   });
   if (r.ok) {
-    const data = await r.json();
-    showFlash(`Предсказание: ${currentType === 'kill' ? 'килл' : 'рошан'} через ${delay}с ⏱️`);
+    showFlash(`Прогноз: ${currentType === 'kill' ? 'килл' : 'рошан'} на ${target} 🎯`);
+    targetInput.value = '';
   } else {
     let msg = 'Ошибка';
     try { msg = (await r.json()).error || msg; } catch (e) {}
@@ -185,10 +206,11 @@ function connect() {
       }
     } else if (msg.type === 'event') {
       addMark('ev ' + msg.event_type, msg.event_type);
-      logLine(`${msg.event_type === 'kill' ? '🗡️' : '🐉'} <b>${msg.event_type}</b> <span class="src">${msg.source}</span>`);
+      logLine(`${msg.event_type === 'kill' ? '🗡️' : '🐉'} <b>${msg.event_type}</b> на <span class="cd">${fmtMmss(msg.ts)}</span> <span class="src">${msg.source}</span>`);
     } else if (msg.type === 'prediction') {
       activePreds.set(msg.prediction_id, msg);
       addMark('pred ' + msg.event_type, msg.nickname);
+      logLine(`📍 <b>${msg.nickname}</b> ставит ${msg.event_type === 'kill' ? '🗡️' : '🐉'} на <span class="cd">${fmtMmss(msg.target_game_time)}</span>`);
     }
   };
   ws.onclose = () => setTimeout(connect, 1500);

@@ -85,13 +85,37 @@ if _stream_url:
 class PredictBody(BaseModel):
     nickname: str
     event_type: str
-    delay_seconds: float
-    submit_video_time: float | None = None
+    target: str | float    # absolute game time, "MM:SS" or seconds
 
 
 class AdminEventBody(BaseModel):
     event_type: str
     source: str = "manual"
+
+
+MIN_LEAD_SECONDS = 10           # cannot bet less than this far ahead
+MIN_SPACING_SECONDS = 30        # min gap between successive bets by same user
+SCORING_WINDOW = 20.0           # |target - event| must fit in this
+
+
+def _parse_target(v: str | float) -> int | None:
+    if isinstance(v, (int, float)):
+        return int(v) if v >= 0 else None
+    s = str(v).strip()
+    if ":" in s:
+        try:
+            mm, ss = s.split(":")
+            return int(mm) * 60 + int(ss)
+        except ValueError:
+            return None
+    try:
+        return int(float(s))
+    except ValueError:
+        return None
+
+
+def _current_game_time() -> int | None:
+    return demo_clock.game_time()
 
 
 @app.get("/")
@@ -113,29 +137,53 @@ async def index(request: Request):
 async def predict(body: PredictBody):
     nick = body.nickname.strip()[:24]
     if not nick:
-        return JSONResponse({"error": "nickname required"}, status_code=400)
-    delay = max(0.5, min(60.0, body.delay_seconds))
-    uid = await db.get_or_create_user(nick)
-    # Demo mode clients pass their video.currentTime so submit/predicted/event
-    # timestamps all live in the same video-time scale.
-    submit_ts = body.submit_video_time if body.submit_video_time is not None else time.time()
-    predicted_ts = submit_ts + delay
-    if await db.has_active_prediction(uid, submit_ts):
+        return JSONResponse({"error": "укажи никнейм"}, status_code=400)
+    if body.event_type not in ("kill", "roshan"):
+        return JSONResponse({"error": "event_type должен быть kill или roshan"}, status_code=400)
+    target = _parse_target(body.target)
+    if target is None:
+        return JSONResponse({"error": "неверный формат target (нужно MM:SS или секунды)"}, status_code=400)
+
+    now_game = _current_game_time()
+    if now_game is None:
         return JSONResponse(
-            {"error": "уже есть активное предсказание — дождись результата"},
+            {"error": "игровой таймер ещё не инициализирован, попробуй через секунду"},
+            status_code=503,
+        )
+
+    if target < now_game + MIN_LEAD_SECONDS:
+        return JSONResponse(
+            {"error": f"ставку надо делать минимум за {MIN_LEAD_SECONDS} сек до целевого времени"},
+            status_code=400,
+        )
+
+    uid = await db.get_or_create_user(nick)
+    last_target = await db.last_unmatched_target(uid)
+    if last_target is not None and abs(target - last_target) < MIN_SPACING_SECONDS:
+        return JSONResponse(
+            {"error": f"минимум {MIN_SPACING_SECONDS} сек между ставками одного игрока"},
             status_code=409,
         )
-    pid = await db.add_prediction(uid, body.event_type, submit_ts, predicted_ts)
+
+    pid = await db.add_prediction(uid, body.event_type, float(now_game), float(target))
     await bus.broadcast({
         "type": "prediction",
         "prediction_id": pid,
         "nickname": nick,
         "event_type": body.event_type,
-        "submit_ts": submit_ts,
-        "predicted_ts": predicted_ts,
-        "delay": delay,
+        "submit_game_time": now_game,
+        "target_game_time": target,
     })
-    return {"id": pid, "submit_ts": submit_ts, "predicted_ts": predicted_ts}
+    return {"id": pid, "now_game": now_game, "target": target}
+
+
+@app.get("/api/my_predictions")
+async def my_predictions(nickname: str):
+    nick = nickname.strip()[:24]
+    if not nick:
+        return []
+    uid = await db.get_or_create_user(nick)
+    return await db.user_predictions(uid)
 
 
 @app.get("/api/leaderboard")
@@ -153,6 +201,8 @@ async def status():
     return {
         "demo_mode": _local_media is not None,
         "video_time": demo_clock.video_time,
+        "game_time": demo_clock.game_time(),
+        "game_time_offset": demo_clock.game_time_offset,
     }
 
 
